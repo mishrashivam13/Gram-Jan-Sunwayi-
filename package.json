@@ -4,7 +4,8 @@
   "description": "",
   "main": "index.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "start": "node server.js",
+    "build": "npm rebuild sqlite3 --build-from-source"
   },
   "engines": {
     "node": "20.x"
