@@ -48,6 +48,7 @@ async function initializeDB() {
   await db.exec(`
     CREATE TABLE IF NOT EXISTS complaints (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
+      category TEXT DEFAULT 'अन्य',
       problem_text TEXT,
       audio_url TEXT,
       media_urls TEXT,
@@ -55,6 +56,12 @@ async function initializeDB() {
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP
     )
   `);
+
+  try {
+    await db.exec(`ALTER TABLE complaints ADD COLUMN category TEXT DEFAULT 'अन्य'`);
+  } catch (err) {
+    // Column probably already exists
+  }
   console.log('Database initialized.');
 }
 initializeDB();
@@ -95,6 +102,7 @@ app.post('/api/complaints', upload.fields([
 ]), async (req, res) => {
   try {
     const problemText = req.body.problem || '';
+    const categoryText = req.body.category || 'अन्य';
     
     let audioUrl = null;
     if (req.files['audio'] && req.files['audio'].length > 0) {
@@ -107,8 +115,8 @@ app.post('/api/complaints', upload.fields([
     }
 
     const result = await db.run(
-      'INSERT INTO complaints (problem_text, audio_url, media_urls) VALUES (?, ?, ?)',
-      [problemText, audioUrl, JSON.stringify(mediaUrls)]
+      'INSERT INTO complaints (category, problem_text, audio_url, media_urls) VALUES (?, ?, ?, ?)',
+      [categoryText, problemText, audioUrl, JSON.stringify(mediaUrls)]
     );
 
     res.status(201).json({
@@ -137,7 +145,22 @@ app.get('/api/complaints', authenticateToken, async (req, res) => {
   }
 });
 
-// 4. Update complaint status (Protected)
+// 4. Fetch a specific complaint's status (Public)
+app.get('/api/complaints/:id/status', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const complaint = await db.get('SELECT id, status FROM complaints WHERE id = ?', [id]);
+    if (complaint) {
+      res.json({ success: true, status: complaint.status });
+    } else {
+      res.status(404).json({ success: false, error: 'Complaint not found' });
+    }
+  } catch (error) {
+    res.status(500).json({ success: false, error: 'Failed to fetch status' });
+  }
+});
+
+// 5. Update complaint status (Protected)
 app.patch('/api/complaints/:id/status', authenticateToken, async (req, res) => {
   try {
     const { id } = req.params;
@@ -152,6 +175,42 @@ app.patch('/api/complaints/:id/status', authenticateToken, async (req, res) => {
   } catch (error) {
     console.error('Error updating status:', error);
     res.status(500).json({ success: false, error: 'Failed to update status' });
+  }
+});
+
+// 5. Delete a complaint (Protected)
+app.delete('/api/complaints/:id', authenticateToken, async (req, res) => {
+  try {
+    const { id } = req.params;
+    
+    // Fetch complaint to get file URLs so we can delete them from disk
+    const complaint = await db.get('SELECT audio_url, media_urls FROM complaints WHERE id = ?', [id]);
+    
+    if (complaint) {
+      // Delete audio file
+      if (complaint.audio_url) {
+        const filename = complaint.audio_url.split('/').pop();
+        const filepath = path.join(uploadDir, filename);
+        if (fs.existsSync(filepath)) fs.unlinkSync(filepath);
+      }
+      
+      // Delete media files
+      if (complaint.media_urls) {
+        const mediaUrls = JSON.parse(complaint.media_urls);
+        mediaUrls.forEach(url => {
+          const filename = url.split('/').pop();
+          const filepath = path.join(uploadDir, filename);
+          if (fs.existsSync(filepath)) fs.unlinkSync(filepath);
+        });
+      }
+    }
+
+    // Delete from database
+    await db.run('DELETE FROM complaints WHERE id = ?', [id]);
+    res.json({ success: true, message: 'Complaint deleted successfully' });
+  } catch (error) {
+    console.error('Error deleting complaint:', error);
+    res.status(500).json({ success: false, error: 'Failed to delete complaint' });
   }
 });
 
